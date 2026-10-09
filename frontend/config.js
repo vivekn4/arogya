@@ -8,5 +8,5 @@
  * origin, or when a reverse proxy routes /api/* to the backend.
  */
 window.AROGYA_CONFIG = {
-  API_URL: "/api/chat",
+  API_URL: "https://arogya-backend-rg8m.onrender.com/api/chat",
 };
