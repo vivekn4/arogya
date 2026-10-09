@@ -147,11 +147,12 @@ const EMERGENCY_MSG = {
 /* API + response parsing                                              */
 /* ------------------------------------------------------------------ */
 
-async function callAI(messages) {
+async function callAI(messages, { signal } = {}) {
   const res = await fetch(API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ messages }),
+    signal,
   });
 
   let data = null;
@@ -173,6 +174,54 @@ async function callAI(messages) {
   }
 
   return data;
+}
+
+/* ------------------------------------------------------------------ */
+/* callAI with a hard timeout + a "slow" hint for cold starts          */
+/* Render's free tier sleeps when idle, so the first request can take  */
+/* 30-60s to wake the backend. Without a timeout the UI would show     */
+/* typing dots forever and block the send button.                      */
+/* ------------------------------------------------------------------ */
+
+const API_TIMEOUT_MS = 75000; // covers cold start (~60s) + backend AI timeout (60s)
+const SLOW_HINT_MS = 8000; // after this long, tell the user we're waking up
+
+function isTimeoutError(err) {
+  return (
+    err?.name === "AbortError" ||
+    /abort|timeout/i.test(err?.message || "") ||
+    err?.code === 20
+  );
+}
+
+/**
+ * Wraps callAI with an AbortController timeout.
+ * onSlow fires once if the request is still pending after SLOW_HINT_MS.
+ * Returns { promise, cancel } so callers can settle UI state.
+ */
+function callAIWithTimeout(messages, onSlow) {
+  const controller = new AbortController();
+  let slowTimer = null;
+  let settled = false;
+
+  if (onSlow) {
+    slowTimer = setTimeout(() => {
+      if (!settled) onSlow();
+    }, SLOW_HINT_MS);
+  }
+  const timeout = setTimeout(() => {
+    const err = new Error("Request timed out");
+    err.name = "AbortError";
+    controller.abort(err);
+  }, API_TIMEOUT_MS);
+
+  const promise = callAI(messages, { signal: controller.signal }).finally(() => {
+    settled = true;
+    clearTimeout(slowTimer);
+    clearTimeout(timeout);
+  });
+
+  return { promise, cancel: () => controller.abort() };
 }
 
 function defaultParsed(message = "I had a little hiccup — could you say that again?") {
@@ -697,6 +746,7 @@ function ChatScreen({ onReset, onCrisis }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(true);
+  const [waking, setWaking] = useState(false); // backend cold start hint
   const [qrs, setQRs] = useState([]);
   const [symptoms, setSymptoms] = useState([]);
   const [curStep, setCurStep] = useState("area");
@@ -738,6 +788,7 @@ function ChatScreen({ onReset, onCrisis }) {
     setMessages((prev) => [...prev, { role: "bot", ...parsed }]);
     setQRs(parsed.quickReplies || []);
     setLoading(false);
+    setWaking(false);
 
     if (parsed.isSummary) {
       setSummary({ remedies: remRef.current, doctorNote: parsed.doctorNote || null });
@@ -748,17 +799,29 @@ function ChatScreen({ onReset, onCrisis }) {
     const opening = [{ role: "user", content: "hi" }];
     histRef.current = opening;
 
-    callAI(opening)
+    const { promise } = callAIWithTimeout(opening, () => setWaking(true));
+    promise
       .then((data) => handleData(data, opening))
       .catch((error) => {
         console.error("Initial load error:", error);
-        setMessages([FALLBACK]);
+        const timedOut = isTimeoutError(error);
+        setMessages([
+          {
+            ...FALLBACK,
+            message: timedOut
+              ? "Hey! I'm just waking up — free hosting was asleep. 🌅 What's been bothering you today?"
+              : FALLBACK.message,
+          },
+        ]);
         setQRs(FALLBACK.quickReplies);
         setLoading(false);
+        setWaking(false);
         if (!navigator.onLine) {
           showToast("📡 No internet — please check your connection");
         } else if (error.status === 429) {
           showToast("⏳ Too busy right now — please wait a moment and try again");
+        } else if (timedOut) {
+          showToast("☕ Arogya was waking up — you're good to chat now");
         } else {
           showToast("❌ The wellness service is unreachable — please try again");
         }
@@ -792,13 +855,36 @@ function ChatScreen({ onReset, onCrisis }) {
       histRef.current = history;
 
       try {
-        const data = await callAI(history);
+        const { promise } = callAIWithTimeout(history, () => setWaking(true));
+        const data = await promise;
+        setWaking(false);
         handleData(data, history);
       } catch (err) {
         console.error("sendMessage error:", err);
         setLoading(false);
+        setWaking(false);
 
-        if (err.status === 429) {
+        if (isTimeoutError(err)) {
+          showToast("☕ That took too long — the server may have been asleep. Try again!");
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: "bot",
+              message:
+                "Sorry about the wait — I was waking up and ran out of time. Mind sending that again?",
+              quickReplies: ["Try again"],
+              stage: "questioning",
+              currentStep: curStep,
+              collectedSymptoms: [],
+              remedies: [],
+              doctorNote: null,
+              warningSigns: [],
+              isSummary: false,
+              showSoftCrisis: false,
+              softCrisisMessage: null,
+            },
+          ]);
+        } else if (err.status === 429) {
           showToast("⏳ Too busy right now — please wait a moment and try again");
           setMessages((prev) => [
             ...prev,
@@ -938,14 +1024,19 @@ function ChatScreen({ onReset, onCrisis }) {
         )}
 
         {loading && (
-          <div className="mrow" aria-hidden="true">
+          <div className="mrow">
             <div className="mav">🌿</div>
             <div className="bub bot">
-              <div className="typing">
+              <div className="typing" aria-label={waking ? "Waking up Arogya" : "Arogya is typing"}>
                 <div className="td" />
                 <div className="td" />
                 <div className="td" />
               </div>
+              {waking && (
+                <p style={{ fontSize: 12, color: "#9a7c62", marginTop: 6 }}>
+                  ☕ Waking Arogya up — free hosting was asleep. One moment…
+                </p>
+              )}
             </div>
           </div>
         )}
