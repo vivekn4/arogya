@@ -185,6 +185,7 @@ async function callAI(messages, { signal } = {}) {
 
 const API_TIMEOUT_MS = 75000; // covers cold start (~60s) + backend AI timeout (60s)
 const SLOW_HINT_MS = 8000; // after this long, tell the user we're waking up
+const STREAM_URL = API_URL.replace(/\/chat$/, "/chat/stream");
 
 function isTimeoutError(err) {
   return (
@@ -195,15 +196,47 @@ function isTimeoutError(err) {
 }
 
 /**
- * Wraps callAI with an AbortController timeout.
- * onSlow fires once if the request is still pending after SLOW_HINT_MS.
- * Returns { promise, cancel } so callers can settle UI state.
+ * Extract the in-progress "message" field from a partially-streamed JSON
+ * reply. The model is instructed to put "message" first, so this usually
+ * yields displayable text within the first chunks. Returns "" if the field
+ * hasn't started arriving yet.
  */
-function callAIWithTimeout(messages, onSlow) {
+function extractStreamingMessage(acc) {
+  const m = acc.match(/"message"\s*:\s*"/);
+  if (!m) return "";
+  const inner = acc.slice(m.index + m[0].length);
+  let i = 0;
+  let out = "";
+  while (i < inner.length) {
+    const c = inner[i];
+    if (c === "\\" && i + 1 < inner.length) {
+      out += c + inner[i + 1];
+      i += 2;
+      continue;
+    }
+    if (c === '"') break;
+    out += c;
+    i++;
+  }
+  try {
+    return JSON.parse('"' + out + '"');
+  } catch {
+    return out.replace(/\\n/g, "\n").replace(/\\"/g, '"');
+  }
+}
+
+/**
+ * POST to the SSE stream endpoint and invoke onDelta(accumulatedText) as
+ * chunks arrive. Resolves to the final {done, reply|error, ...} event.
+ * Aborts after API_TIMEOUT_MS; onSlow fires if nothing arrives quickly.
+ */
+async function streamChat(messages, { onDelta, onSlow, signal } = {}) {
   const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  if (signal) signal.addEventListener("abort", onAbort, { once: true });
+
   let slowTimer = null;
   let settled = false;
-
   if (onSlow) {
     slowTimer = setTimeout(() => {
       if (!settled) onSlow();
@@ -215,13 +248,66 @@ function callAIWithTimeout(messages, onSlow) {
     controller.abort(err);
   }, API_TIMEOUT_MS);
 
-  const promise = callAI(messages, { signal: controller.signal }).finally(() => {
+  try {
+    const res = await fetch(STREAM_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok || !res.body) {
+      let msg = `HTTP ${res.status}`;
+      try {
+        const d = await res.json();
+        if (d?.error) msg = d.error;
+      } catch {
+        /* ignore */
+      }
+      const e = new Error(msg);
+      e.status = res.status;
+      throw e;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let acc = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const evt = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        for (const line of evt.split("\n")) {
+          const t = line.trim();
+          if (!t.startsWith("data:")) continue;
+          let obj;
+          try {
+            obj = JSON.parse(t.slice(5).trim());
+          } catch {
+            continue;
+          }
+          if (obj.delta) {
+            acc += obj.delta;
+            if (onDelta) onDelta(acc);
+          }
+          if (obj.done) {
+            settled = true;
+            return obj;
+          }
+        }
+      }
+    }
+    throw new Error("Stream ended unexpectedly");
+  } finally {
     settled = true;
     clearTimeout(slowTimer);
     clearTimeout(timeout);
-  });
-
-  return { promise, cancel: () => controller.abort() };
+    if (signal) signal.removeEventListener("abort", onAbort);
+  }
 }
 
 function defaultParsed(message = "I had a little hiccup — could you say that again?") {
@@ -464,6 +550,12 @@ function OfflineScreen() {
 }
 
 function WelcomeScreen({ onStart, onShowPrivacy }) {
+  const starters = [
+    { ic: "🤕", label: "I have a headache", msg: "I have a headache" },
+    { ic: "🤒", label: "Feeling feverish", msg: "I'm feeling feverish" },
+    { ic: "😮‍💨", label: "Stomach issues", msg: "My stomach is bothering me" },
+    { ic: "😰", label: "Stressed out", msg: "I've been feeling really stressed lately" },
+  ];
   return (
     <main className="welcome" id="main">
       <span className="welcome-leaf" aria-hidden="true">
@@ -478,6 +570,16 @@ function WelcomeScreen({ onStart, onShowPrivacy }) {
         Tell Arogya how you're feeling — your caring wellness companion will ask a few gentle questions
         and suggest natural home remedies to help you feel better.
       </p>
+      <div className="starters">
+        <div className="starters-lbl">Try one to start:</div>
+        <div className="starters-row">
+          {starters.map((s) => (
+            <button key={s.label} className="starter-chip" onClick={() => onStart(s.msg)}>
+              <span aria-hidden="true">{s.ic}</span> {s.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="feat-grid">
         {[
           { ic: "🤫", t: "Fully Private", d: "Anonymous — no data stored" },
@@ -496,7 +598,7 @@ function WelcomeScreen({ onStart, onShowPrivacy }) {
           </div>
         ))}
       </div>
-      <button className="start-btn" onClick={onStart}>
+      <button className="start-btn" onClick={() => onStart()}>
         Chat with Arogya 🌼
       </button>
       <p className="welcome-foot">
@@ -654,6 +756,7 @@ function BotBubble({ msg }) {
 }
 
 function SummaryCard({ symptoms, remedies, doctorNote }) {
+  const [copied, setCopied] = useState(false);
   const deduped = useMemo(
     () => [...new Map(remedies.map((r) => [r.title + "|" + (r.detail || ""), r])).values()],
     [remedies]
@@ -662,6 +765,34 @@ function SummaryCard({ symptoms, remedies, doctorNote }) {
     () => [...new Set(deduped.filter((r) => r.source && r.source !== "null").map((r) => r.source))],
     [deduped]
   );
+
+  const shareSummary = useCallback(async () => {
+    const lines = ["🌿 My Arogya Wellness Summary", ""];
+    if (symptoms.length) lines.push(`Symptoms noted: ${symptoms.join(", ")}`);
+    if (deduped.length) {
+      lines.push("", "Remedies suggested:");
+      deduped.forEach((r) => lines.push(`• ${r.icon || "🌱"} ${r.title}${r.detail ? ` — ${r.detail}` : ""}`));
+    }
+    if (doctorNote) lines.push("", `Doctor's note: ${doctorNote}`);
+    lines.push("", "— via Arogya, your AI wellness companion");
+    lines.push("https://arogya-app-yd2w.onrender.com");
+    const text = lines.join("\n");
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: "My Arogya Wellness Summary", text });
+        return;
+      } catch {
+        /* user dismissed — fall through to clipboard */
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  }, [symptoms, deduped, doctorNote]);
 
   return (
     <div className="summary">
@@ -733,6 +864,11 @@ function SummaryCard({ symptoms, remedies, doctorNote }) {
           </div>
         )}
       </div>
+      <div className="sum-actions">
+        <button className="share-btn" onClick={shareSummary}>
+          {copied ? "✅ Copied to clipboard!" : "📤 Share my summary"}
+        </button>
+      </div>
       <div className="sum-foot">
         🌿 General wellness guidance — not a substitute for medical advice.
         <br />
@@ -742,11 +878,12 @@ function SummaryCard({ symptoms, remedies, doctorNote }) {
   );
 }
 
-function ChatScreen({ onReset, onCrisis }) {
+function ChatScreen({ starter, onReset, onCrisis }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [waking, setWaking] = useState(false); // backend cold start hint
+  const [streaming, setStreaming] = useState(""); // live word-by-word reply text
   const [qrs, setQRs] = useState([]);
   const [symptoms, setSymptoms] = useState([]);
   const [curStep, setCurStep] = useState("area");
@@ -762,7 +899,7 @@ function ChatScreen({ onReset, onCrisis }) {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
+  }, [messages, loading, streaming]);
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
@@ -799,6 +936,7 @@ function ChatScreen({ onReset, onCrisis }) {
   // same warm-up pattern, so seed it locally and keep history consistent for
   // the backend. Saves a full 8-16s AI call on every chat start; the first
   // real user message is what actually needs the AI.
+  const sendRef = useRef(null);
   useEffect(() => {
     const { role: _r, ...greeting } = FALLBACK;
     histRef.current = [
@@ -809,6 +947,13 @@ function ChatScreen({ onReset, onCrisis }) {
     setQRs(greeting.quickReplies);
     setCurStep(greeting.currentStep);
     setLoading(false);
+    // A starter chip from the welcome screen auto-sends after the greeting paints.
+    if (starter) {
+      const t = setTimeout(() => {
+        if (sendRef.current) sendRef.current(starter);
+      }, 700);
+      return () => clearTimeout(t);
+    }
   }, []);
 
   const sendMessage = useCallback(
@@ -838,14 +983,24 @@ function ChatScreen({ onReset, onCrisis }) {
       histRef.current = history;
 
       try {
-        const { promise } = callAIWithTimeout(history, () => setWaking(true));
-        const data = await promise;
+        setStreaming("");
+        const result = await streamChat(history, {
+          onSlow: () => setWaking(true),
+          onDelta: (acc) => setStreaming(extractStreamingMessage(acc)),
+        });
         setWaking(false);
-        handleData(data, history);
+        setStreaming("");
+        if (result.error) {
+          const e = new Error(result.error);
+          e.status = result.status || 500;
+          throw e;
+        }
+        handleData({ reply: result.reply, degraded: result.degraded }, history);
       } catch (err) {
         console.error("sendMessage error:", err);
         setLoading(false);
         setWaking(false);
+        setStreaming("");
 
         if (isTimeoutError(err)) {
           showToast("☕ That took too long — the server may have been asleep. Try again!");
@@ -912,6 +1067,9 @@ function ChatScreen({ onReset, onCrisis }) {
     },
     [input, loading, curStep, showToast, handleData, onCrisis]
   );
+
+  // Keep the starter auto-send pointed at the latest sendMessage.
+  sendRef.current = sendMessage;
 
   const pickArea = useCallback(
     (area) => {
@@ -1010,12 +1168,19 @@ function ChatScreen({ onReset, onCrisis }) {
           <div className="mrow">
             <div className="mav">🌿</div>
             <div className="bub bot">
-              <div className="typing" aria-label={waking ? "Waking up Arogya" : "Arogya is typing"}>
-                <div className="td" />
-                <div className="td" />
-                <div className="td" />
-              </div>
-              {waking && (
+              {streaming ? (
+                <p>
+                  {streaming}
+                  <span className="stream-cursor" aria-hidden="true" />
+                </p>
+              ) : (
+                <div className="typing" aria-label={waking ? "Waking up Arogya" : "Arogya is typing"}>
+                  <div className="td" />
+                  <div className="td" />
+                  <div className="td" />
+                </div>
+              )}
+              {waking && !streaming && (
                 <p style={{ fontSize: 12, color: "#9a7c62", marginTop: 6 }}>
                   ☕ Waking Arogya up — free hosting was asleep. One moment…
                 </p>
@@ -1082,6 +1247,7 @@ function App() {
   const [showCrisis, setShowCrisis] = useState(false);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [chatKey, setChatKey] = useState(0);
+  const [starter, setStarter] = useState("");
 
   useEffect(() => {
     const splash = document.getElementById("splash");
@@ -1106,8 +1272,9 @@ function App() {
     };
   }, []);
 
-  const goToChat = useCallback(() => {
+  const goToChat = useCallback((starterMsg) => {
     setChatKey((k) => k + 1);
+    setStarter(typeof starterMsg === "string" ? starterMsg : "");
     setScreen("chat");
   }, []);
 
@@ -1122,7 +1289,12 @@ function App() {
         <WelcomeScreen onStart={goToChat} onShowPrivacy={() => setShowPrivacy(true)} />
       )}
       {screen === "chat" && isOnline && (
-        <ChatScreen key={chatKey} onReset={() => setScreen("welcome")} onCrisis={() => setShowCrisis(true)} />
+        <ChatScreen
+          key={chatKey}
+          starter={starter}
+          onReset={() => setScreen("welcome")}
+          onCrisis={() => setShowCrisis(true)}
+        />
       )}
       {showPrivacy && <PrivacyModal onClose={() => setShowPrivacy(false)} />}
     </div>

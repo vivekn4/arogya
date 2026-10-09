@@ -103,6 +103,7 @@ HARD SAFETY RULES — never break these
 
 OUTPUT FORMAT — this is mandatory, not optional
 - Reply with EXACTLY ONE valid JSON object. No prose before or after it. No markdown, no code fences.
+- Put the "message" field FIRST in the JSON object — clients display it while the rest streams in.
 - Use this exact schema (omit nothing, add nothing):
 {"message":"string (your reply to the user)","quickReplies":["up to 4 short reply options"],"stage":"questioning | remedy | doctor","currentStep":"area | symptoms | duration | severity | remedy","collectedSymptoms":["short symptom labels"],"remedies":[{"icon":"a single emoji","title":"remedy name","detail":"one-line how-to","source":"domain.com or null"}],"doctorNote":"string or null","warningSigns":["signs that mean see a doctor"],"isSummary":false,"showSoftCrisis":false,"softCrisisMessage":null}
 - "stage" is "doctor" only when you advise seeing a doctor; otherwise "questioning" or "remedy".
@@ -174,15 +175,9 @@ async function callAnthropicRaw(messages, temperature) {
 /** Native Gemini provider — v1beta generateContent REST API.
  *  Uses per-model free-tier quota, independent from the OpenAI-compatible
  *  endpoint, so a throttled model on one path doesn't block the other. */
-async function callGeminiRaw(messages, temperature) {
-  if (!AI_API_KEY) {
-    throw new UpstreamError("Server is not configured with a Gemini API key.", 500);
-  }
-  const base = (process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, "");
-  const url = `${base}/models/${AI_MODEL}:generateContent`;
 
-  // Map to Gemini roles; merge consecutive same-role messages and ensure the
-  // conversation starts with a user message (API requirement).
+/** Map our chat history to Gemini contents (shared by streaming + non-streaming). */
+function toGeminiContents(messages) {
   const contents = [];
   for (const m of messages) {
     const role = m.role === "assistant" ? "model" : "user";
@@ -195,6 +190,17 @@ async function callGeminiRaw(messages, temperature) {
     }
   }
   while (contents.length && contents[0].role !== "user") contents.shift();
+  return contents;
+}
+
+async function callGeminiRaw(messages, temperature) {
+  if (!AI_API_KEY) {
+    throw new UpstreamError("Server is not configured with a Gemini API key.", 500);
+  }
+  const base = (process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, "");
+  const url = `${base}/models/${AI_MODEL}:generateContent`;
+
+  const contents = toGeminiContents(messages);
   if (!contents.length) throw new UpstreamError("No valid messages to send.", 500);
 
   const body = JSON.stringify({
@@ -235,6 +241,121 @@ async function callGeminiRaw(messages, temperature) {
     throw new UpstreamError(`Gemini API returned an empty reply (finishReason: ${reason}).`, 502);
   }
   return text;
+}
+
+/**
+ * Streaming Gemini completion via streamGenerateContent (SSE).
+ * Emits text deltas through onDelta as they arrive; resolves to the full text.
+ */
+async function streamGeminiRaw(messages, temperature, onDelta) {
+  if (!AI_API_KEY) {
+    throw new UpstreamError("Server is not configured with a Gemini API key.", 500);
+  }
+  const base = (process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, "");
+  const url = `${base}/models/${AI_MODEL}:streamGenerateContent?alt=sse`;
+
+  const contents = toGeminiContents(messages);
+  if (!contents.length) throw new UpstreamError("No valid messages to send.", 500);
+
+  const body = JSON.stringify({
+    systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    contents,
+    generationConfig: { temperature, maxOutputTokens: AI_MAX_TOKENS },
+  });
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": AI_API_KEY },
+      body,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    if (err?.name === "AbortError") {
+      throw new UpstreamError(`Gemini stream timed out after ${AI_TIMEOUT_MS}ms`, 504);
+    }
+    throw new UpstreamError(`Gemini stream failed: ${err?.message || "network error"}`, 502);
+  }
+
+  if (!res.ok || !res.body) {
+    clearTimeout(timer);
+    let detail = `HTTP ${res.status}`;
+    try {
+      const data = await res.json();
+      detail = data?.error?.message || detail;
+    } catch {
+      /* ignore */
+    }
+    const status = res.status === 429 ? 429 : res.status >= 500 ? 502 : res.status;
+    throw new UpstreamError(`Gemini API error: ${detail}`, status);
+  }
+
+  let fullText = "";
+  let buf = "";
+  const decoder = new TextDecoder();
+  try {
+    for await (const chunk of res.body) {
+      buf += decoder.decode(chunk, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const evt = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        for (const line of evt.split("\n")) {
+          const t = line.trim();
+          if (!t.startsWith("data:")) continue;
+          const payload = t.slice(5).trim();
+          if (!payload || payload === "[DONE]") continue;
+          try {
+            const data = JSON.parse(payload);
+            const parts = data?.candidates?.[0]?.content?.parts || [];
+            for (const p of parts) {
+              if (p.text) {
+                fullText += p.text;
+                onDelta(p.text);
+              }
+            }
+          } catch {
+            /* partial JSON chunk — more bytes coming */
+          }
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (!fullText.trim()) throw new UpstreamError("Gemini stream returned an empty reply.", 502);
+  return fullText;
+}
+
+/**
+ * Streaming with brief retries. Never retries after deltas were already
+ * emitted — a retry would duplicate streamed text on the client.
+ */
+async function streamWithRetry(messages, temperature, onDelta) {
+  const delays = [2000];
+  let emitted = false;
+  const guarded = (d) => {
+    emitted = true;
+    onDelta(d);
+  };
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await streamGeminiRaw(messages, temperature, guarded);
+    } catch (err) {
+      if (emitted) throw err;
+      const retryable =
+        err instanceof UpstreamError &&
+        (err.status === 502 || err.status === 504 || err.status === 429 || err.status === 402);
+      if (!retryable || attempt >= delays.length) throw err;
+      log("warn", { event: "ai_stream_retry", attempt: attempt + 1, status: err.status });
+      await new Promise((r) => setTimeout(r, delays[attempt]));
+    }
+  }
 }
 
 /** OpenAI-compatible provider — parameters overridable for the fallback. */
@@ -571,6 +692,60 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
       ? "The wellness service is busy right now — please wait a moment and try again."
       : "Something went wrong talking to the wellness service. Please try again in a moment.";
     return res.status(status).json({ error: safe });
+  }
+});
+
+/**
+ * Streaming chat: Server-Sent Events.
+ * Emits {delta} text chunks as the model generates, then a final
+ * {done, reply} (or {done, error, status}) event. Lets the client render the
+ * reply word-by-word instead of waiting for the full response.
+ */
+app.post("/api/chat/stream", chatLimiter, async (req, res) => {
+  const problem = validateChatBody(req.body);
+  if (problem) {
+    return res.status(400).json({ error: problem });
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+
+  try {
+    const messages = normalizeMessages(req.body.messages);
+    let fullText;
+    if (AI_PROVIDER === "gemini") {
+      fullText = await streamWithRetry(messages, 0.4, (delta) => send({ delta }));
+    } else {
+      // Providers without streaming: emit the full response as one chunk.
+      fullText = await callAIWithRetry(messages);
+      send({ delta: fullText });
+    }
+    const { reply, degraded } = await parseModelReply(fullText, messages);
+    send({ done: true, reply, degraded: !!degraded });
+  } catch (err) {
+    const status = err instanceof UpstreamError ? err.status : 500;
+    log("error", {
+      event: "chat_stream_failed",
+      reqId: req.id,
+      provider: AI_PROVIDER,
+      model: AI_MODEL,
+      error: err?.message,
+    });
+    const busy = status === 429 || status === 402;
+    send({
+      done: true,
+      status,
+      error: busy
+        ? "The wellness service is busy right now — please wait a moment and try again."
+        : "Something went wrong talking to the wellness service. Please try again in a moment.",
+    });
+  } finally {
+    res.end();
   }
 });
 

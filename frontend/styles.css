@@ -257,6 +257,28 @@ main { display: block; }
 }
 .start-btn:hover { transform: translateY(-2px); box-shadow: 0 10px 32px rgba(178, 95, 6, .38); }
 .start-btn:active { transform: scale(.97); }
+.starters { margin-bottom: 22px; text-align: center; }
+.starters-lbl { font-size: var(--fs-sm); color: var(--muted); margin-bottom: 10px; font-weight: 600; }
+.starters-row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.starter-chip {
+  background: #fff; border: 1.5px solid var(--border); border-radius: var(--r-pill);
+  padding: 9px 14px; font-size: 13.5px; font-weight: 600; color: var(--text); cursor: pointer;
+  transition: transform var(--dur-fast), border-color var(--dur-fast), box-shadow var(--dur-fast);
+  box-shadow: 0 2px 8px var(--shadow);
+}
+.starter-chip:hover { transform: translateY(-1px); border-color: var(--saffron); box-shadow: 0 4px 14px rgba(178, 95, 6, .18); }
+.starter-chip:active { transform: scale(.96); }
+.sum-actions { padding: 12px 20px 0; text-align: center; }
+.share-btn {
+  background: #fff; border: 1.5px solid var(--saffron); color: var(--saffron-deep);
+  border-radius: var(--r-pill); padding: 10px 22px; font-size: 14px; font-weight: 700; cursor: pointer;
+  transition: transform var(--dur-fast), box-shadow var(--dur-fast);
+}
+.share-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(178, 95, 6, .2); }
+.share-btn:active { transform: scale(.97); }
+.stream-cursor { display: inline-block; width: 8px; height: 16px; margin-left: 3px; vertical-align: -2px;
+  background: var(--saffron); border-radius: 2px; animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
 .welcome-foot { margin-top: 20px; font-size: var(--fs-sm); color: var(--muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: center; }
 
 /* ---------- Chat ---------- */

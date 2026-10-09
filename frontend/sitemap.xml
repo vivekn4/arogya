@@ -1,10 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- TODO (before launch): replace your-arogya-domain.example with the real domain. -->
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://your-arogya-domain.example/</loc>
-    <lastmod>2026-10-08</lastmod>
+    <loc>https://arogya-app-yd2w.onrender.com/</loc>
+    <lastmod>2026-10-09</lastmod>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://arogya-app-yd2w.onrender.com/articles/headache-home-remedies.html</loc>
+    <lastmod>2026-10-09</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://arogya-app-yd2w.onrender.com/articles/sore-throat-natural-remedies.html</loc>
+    <lastmod>2026-10-09</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://arogya-app-yd2w.onrender.com/articles/stress-sleep-natural-tips.html</loc>
+    <lastmod>2026-10-09</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
   </url>
 </urlset>
