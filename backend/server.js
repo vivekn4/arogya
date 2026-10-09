@@ -195,7 +195,10 @@ async function callOpenAICompatibleRaw(messages, temperature) {
 
   if (!res.ok) {
     const detail = data?.error?.message || data?.error || `HTTP ${res.status}`;
-    const status = res.status >= 500 || res.status === 429 ? 502 : res.status;
+    // 5xx -> 502 (our problem to absorb). 429/402 pass through untouched so
+    // the client can show the right "busy, try again" UX instead of a
+    // generic error.
+    const status = res.status >= 500 ? 502 : res.status;
     throw new UpstreamError(`AI endpoint error: ${detail}`, status);
   }
 
@@ -217,18 +220,36 @@ async function callAI(messages) {
   return completeOnce(messages, 0.4);
 }
 
-/** Call the provider once, retrying a single time on timeout / network / 5xx. */
+/**
+ * Call the provider with retries and backoff.
+ * - 502/504 (transient): quick retries.
+ * - 429/402 (rate limit / quota): longer backoff — hammering a throttled
+ *   endpoint only extends the throttle.
+ */
 async function callAIWithRetry(messages) {
-  try {
-    return await callAI(messages);
-  } catch (err) {
-    const retryable =
-      err instanceof UpstreamError &&
-      (err.status === 502 || err.status === 504 || err.status === 429 || err.status === 402);
-    if (!retryable) throw err;
-    await new Promise((r) => setTimeout(r, 1200));
-    return callAI(messages);
+  const delays = [1500, 6000, 18000];
+  let lastErr = null;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      return await callAI(messages);
+    } catch (err) {
+      lastErr = err;
+      const retryable =
+        err instanceof UpstreamError &&
+        (err.status === 502 || err.status === 504 || err.status === 429 || err.status === 402);
+      if (!retryable || attempt === delays.length) throw err;
+      const throttled = err.status === 429 || err.status === 402;
+      const wait = throttled ? delays[attempt] * 2 : delays[attempt];
+      log("warn", {
+        event: "ai_retry",
+        attempt: attempt + 1,
+        waitMs: wait,
+        status: err.status,
+      });
+      await new Promise((r) => setTimeout(r, wait));
+    }
   }
+  throw lastErr;
 }
 
 /* ------------------------------------------------------------------ */
