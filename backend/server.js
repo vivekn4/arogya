@@ -297,33 +297,41 @@ async function streamGeminiRaw(messages, temperature, onDelta) {
   let fullText = "";
   let buf = "";
   const decoder = new TextDecoder();
+  const processPayload = (payload) => {
+    if (!payload || payload === "[DONE]") return;
+    try {
+      const data = JSON.parse(payload);
+      const parts = data?.candidates?.[0]?.content?.parts || [];
+      for (const p of parts) {
+        if (p.text) {
+          fullText += p.text;
+          onDelta(p.text);
+        }
+      }
+    } catch {
+      /* partial JSON chunk — more bytes coming */
+    }
+  };
+  const processChunkText = (text) => {
+    for (const line of text.split("\n")) {
+      const t = line.trim();
+      if (t.startsWith("data:")) processPayload(t.slice(5).trim());
+      else if (t.startsWith("{")) processPayload(t); // bare JSON line fallback
+    }
+  };
   try {
     for await (const chunk of res.body) {
       buf += decoder.decode(chunk, { stream: true });
+      buf = buf.replace(/\r\n/g, "\n"); // tolerate CRLF line endings
       let idx;
       while ((idx = buf.indexOf("\n\n")) >= 0) {
-        const evt = buf.slice(0, idx);
+        processChunkText(buf.slice(0, idx));
         buf = buf.slice(idx + 2);
-        for (const line of evt.split("\n")) {
-          const t = line.trim();
-          if (!t.startsWith("data:")) continue;
-          const payload = t.slice(5).trim();
-          if (!payload || payload === "[DONE]") continue;
-          try {
-            const data = JSON.parse(payload);
-            const parts = data?.candidates?.[0]?.content?.parts || [];
-            for (const p of parts) {
-              if (p.text) {
-                fullText += p.text;
-                onDelta(p.text);
-              }
-            }
-          } catch {
-            /* partial JSON chunk — more bytes coming */
-          }
-        }
       }
     }
+    // Flush any trailing event that lacks a terminating blank line.
+    const tail = buf.replace(/\r\n/g, "\n").trim();
+    if (tail) processChunkText(tail);
   } finally {
     clearTimeout(timer);
   }
