@@ -795,38 +795,21 @@ function ChatScreen({ onReset, onCrisis }) {
     }
   }, []);
 
+  // Instant greeting: no API round-trip on chat open. The opener is always the
+  // same warm-up pattern, so seed it locally and keep history consistent for
+  // the backend. Saves a full 8-16s AI call on every chat start; the first
+  // real user message is what actually needs the AI.
   useEffect(() => {
-    const opening = [{ role: "user", content: "hi" }];
-    histRef.current = opening;
-
-    const { promise } = callAIWithTimeout(opening, () => setWaking(true));
-    promise
-      .then((data) => handleData(data, opening))
-      .catch((error) => {
-        console.error("Initial load error:", error);
-        const timedOut = isTimeoutError(error);
-        setMessages([
-          {
-            ...FALLBACK,
-            message: timedOut
-              ? "Hey! I'm just waking up — free hosting was asleep. 🌅 What's been bothering you today?"
-              : FALLBACK.message,
-          },
-        ]);
-        setQRs(FALLBACK.quickReplies);
-        setLoading(false);
-        setWaking(false);
-        if (!navigator.onLine) {
-          showToast("📡 No internet — please check your connection");
-        } else if (error.status === 429) {
-          showToast("⏳ Too busy right now — please wait a moment and try again");
-        } else if (timedOut) {
-          showToast("☕ Arogya was waking up — you're good to chat now");
-        } else {
-          showToast("❌ The wellness service is unreachable — please try again");
-        }
-      });
-  }, [handleData, showToast]);
+    const { role: _r, ...greeting } = FALLBACK;
+    histRef.current = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: JSON.stringify(greeting) },
+    ];
+    setMessages([{ role: "bot", ...greeting }]);
+    setQRs(greeting.quickReplies);
+    setCurStep(greeting.currentStep);
+    setLoading(false);
+  }, []);
 
   const sendMessage = useCallback(
     async (textArg) => {
