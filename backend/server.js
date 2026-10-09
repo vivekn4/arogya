@@ -244,7 +244,7 @@ async function callPollinations(messages, temperature) {
  */
 async function callPrimaryWithRetry(messages) {
   const transientDelays = [1500, 6000, 18000];
-  const throttleDelays = [2000, 8000];
+  const throttleDelays = [2000]; // one quick retry, then fall back — no long 429 waits
   for (let attempt = 0; ; attempt++) {
     try {
       return await callAI(messages);
