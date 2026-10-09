@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+# TODO (before launch): replace your-arogya-domain.example with the real domain.
+Sitemap: https://your-arogya-domain.example/sitemap.xml

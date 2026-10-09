@@ -1,0 +1,37 @@
+{
+  "background_color": "#fdf8f0",
+  "description": "Feeling under the weather? Arogya asks a few gentle questions and suggests natural home remedies \u2014 free, private, and always calm.",
+  "display": "standalone",
+  "icons": [
+    {
+      "purpose": "any",
+      "sizes": "192x192",
+      "src": "./icons/icon-192.png",
+      "type": "image/png"
+    },
+    {
+      "purpose": "any",
+      "sizes": "512x512",
+      "src": "./icons/icon-512.png",
+      "type": "image/png"
+    },
+    {
+      "purpose": "maskable",
+      "sizes": "512x512",
+      "src": "./icons/icon-512.png",
+      "type": "image/png"
+    },
+    {
+      "purpose": "any",
+      "sizes": "any",
+      "src": "./icons/favicon.svg",
+      "type": "image/svg+xml"
+    }
+  ],
+  "name": "Arogya \u2014 Your Wellness Companion",
+  "orientation": "portrait",
+  "scope": "./",
+  "short_name": "Arogya",
+  "start_url": "./",
+  "theme_color": "#e8820c"
+}

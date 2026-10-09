@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <!-- Allow pinch-zoom: readability beats layout rigidity, always. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <title>Arogya — Your Wellness Companion</title>
+  <meta name="description" content="Feeling under the weather? Arogya asks a few gentle questions and suggests natural home remedies to help you feel better — free, private, and always calm." />
+  <meta name="keywords" content="wellness, health, home remedies, natural remedies, symptom checker, feel better" />
+  <meta name="author" content="Arogya" />
+  <meta name="theme-color" content="#e8820c" />
+  <meta name="color-scheme" content="light" />
+
+  <!--
+    Open Graph / Twitter cards.
+    TODO (before launch): replace "your-arogya-domain.example" with the real
+    domain everywhere below. Placeholders are intentional — arogya.app is not ours.
+  -->
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://your-arogya-domain.example/" />
+  <meta property="og:title" content="Arogya — Your Wellness Companion" />
+  <meta property="og:description" content="Feeling under the weather? Arogya asks a few gentle questions and suggests natural home remedies — free, private, and always calm." />
+  <meta property="og:image" content="https://your-arogya-domain.example/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="Arogya — Your Wellness Companion" />
+  <meta property="og:site_name" content="Arogya" />
+  <meta property="og:locale" content="en_US" />
+
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Arogya — Your Wellness Companion" />
+  <meta name="twitter:description" content="Natural home remedies, calm guidance, always private. Chat with Arogya now." />
+  <meta name="twitter:image" content="https://your-arogya-domain.example/og-image.png" />
+  <meta name="twitter:image:alt" content="Arogya — Your Wellness Companion" />
+
+  <link rel="manifest" href="./manifest.json" />
+
+  <link rel="icon" type="image/svg+xml" href="./icons/favicon.svg" />
+  <link rel="icon" type="image/png" sizes="32x32" href="./icons/favicon-32.png" />
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Nunito:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="./styles.css" />
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+
+  <!-- Minimal splash styles inline so the loader paints before styles.css arrives. -->
+  <style>
+    #splash{position:fixed;inset:0;z-index:9999;background:linear-gradient(160deg,#fdf8f0,#f9f0e0);display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:'Nunito',system-ui,sans-serif;transition:opacity .4s ease,visibility .4s ease}
+    #splash.hide{opacity:0;visibility:hidden}
+    .splash-leaf{font-size:60px;animation:splashFloat 1.8s ease-in-out infinite}
+    .splash-name{font-family:Georgia,serif;font-size:28px;font-weight:600;color:#3d2b1a;margin-top:16px}
+    .splash-name em{color:#e8820c;font-style:italic}
+    .splash-tagline{font-size:13px;color:#7c5f45;margin-top:6px}
+    .splash-bar{width:48px;height:3px;background:#e8d8c0;border-radius:4px;margin-top:28px;overflow:hidden}
+    .splash-bar-fill{height:100%;width:0;background:linear-gradient(90deg,#e8820c,#f5a623);border-radius:4px;animation:splashLoad 1.6s ease forwards}
+    @keyframes splashFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+    @keyframes splashLoad{0%{width:0}60%{width:70%}100%{width:100%}}
+    @media (prefers-reduced-motion:reduce){.splash-leaf,.splash-bar-fill{animation:none}}
+  </style>
+</head>
+
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <div id="splash" aria-hidden="true">
+    <div class="splash-leaf">🌿</div>
+    <div class="splash-name"><em>Arogya</em></div>
+    <div class="splash-tagline">Your Wellness Companion</div>
+    <div class="splash-bar"><div class="splash-bar-fill"></div></div>
+  </div>
+
+  <div id="root"></div>
+
+  <noscript>
+    <div style="max-width:420px;margin:80px auto;padding:24px;text-align:center;font-family:system-ui,sans-serif;color:#3d2b1a">
+      <h1>Arogya</h1>
+      <p>Arogya needs JavaScript to run. Please enable JavaScript and reload.</p>
+    </div>
+  </noscript>
+
+  <!-- Runtime config: point the app at your backend here. -->
+  <script src="./config.js"></script>
+  <script type="text/babel" data-presets="react" src="./app.js"></script>
+
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker
+          .register("./sw.js")
+          .then(() => console.log("Arogya: service worker registered"))
+          .catch((err) => console.error("Arogya: SW registration failed:", err));
+      });
+    }
+  </script>
+</body>
+</html>
