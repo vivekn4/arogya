@@ -171,14 +171,17 @@ async function callAnthropicRaw(messages, temperature) {
   }
 }
 
-/** OpenAI-compatible provider — AI_API_KEY optional (keyless free tiers OK). */
-async function callOpenAICompatibleRaw(messages, temperature) {
-  const url = chatCompletionsUrl(AI_BASE_URL);
+/** OpenAI-compatible provider — parameters overridable for the fallback. */
+async function callOpenAICompatibleRaw(messages, temperature, overrides = {}) {
+  const baseUrl = overrides.baseUrl || AI_BASE_URL;
+  const model = overrides.model || AI_MODEL;
+  const apiKey = overrides.apiKey !== undefined ? overrides.apiKey : AI_API_KEY;
+  const url = chatCompletionsUrl(baseUrl);
   const headers = { "Content-Type": "application/json" };
-  if (AI_API_KEY) headers.Authorization = `Bearer ${AI_API_KEY}`;
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
   const body = JSON.stringify({
-    model: AI_MODEL,
+    model,
     messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
     temperature,
     max_tokens: AI_MAX_TOKENS,
@@ -221,25 +224,39 @@ async function callAI(messages) {
 }
 
 /**
- * Call the provider with retries and backoff.
- * - 502/504 (transient): quick retries.
- * - 429/402 (rate limit / quota): longer backoff — hammering a throttled
- *   endpoint only extends the throttle.
+ * Keyless Pollinations fallback — used only when the primary provider is
+ * throttled (429) or its free quota is exhausted (402). No signup, no key.
  */
-async function callAIWithRetry(messages) {
-  const delays = [1500, 6000, 18000];
-  let lastErr = null;
-  for (let attempt = 0; attempt <= delays.length; attempt++) {
+async function callPollinations(messages, temperature) {
+  return callOpenAICompatibleRaw(messages, temperature, {
+    baseUrl: "https://text.pollinations.ai/openai",
+    model: "openai",
+    apiKey: "",
+  });
+}
+
+/**
+ * Primary provider with retries and backoff.
+ * - 502/504 (transient): longer retries, likely to clear on their own.
+ * - 429/402 (throttle/quota): only brief retries — if the primary is truly
+ *   throttled, the caller falls back to Pollinations instead of making the
+ *   user wait through a long backoff.
+ */
+async function callPrimaryWithRetry(messages) {
+  const transientDelays = [1500, 6000, 18000];
+  const throttleDelays = [2000, 8000];
+  for (let attempt = 0; ; attempt++) {
     try {
       return await callAI(messages);
     } catch (err) {
-      lastErr = err;
       const retryable =
         err instanceof UpstreamError &&
         (err.status === 502 || err.status === 504 || err.status === 429 || err.status === 402);
-      if (!retryable || attempt === delays.length) throw err;
+      if (!retryable) throw err;
       const throttled = err.status === 429 || err.status === 402;
-      const wait = throttled ? delays[attempt] * 2 : delays[attempt];
+      const delays = throttled ? throttleDelays : transientDelays;
+      if (attempt >= delays.length) throw err;
+      const wait = delays[attempt];
       log("warn", {
         event: "ai_retry",
         attempt: attempt + 1,
@@ -249,7 +266,30 @@ async function callAIWithRetry(messages) {
       await new Promise((r) => setTimeout(r, wait));
     }
   }
-  throw lastErr;
+}
+
+/**
+ * Resilient completion: primary provider first, seamless Pollinations
+ * fallback when the primary is throttled. The user never hits a 429 wall —
+ * worst case they get an answer a few seconds later via the fallback.
+ */
+async function callAIWithRetry(messages) {
+  try {
+    return await callPrimaryWithRetry(messages);
+  } catch (err) {
+    const throttled =
+      err instanceof UpstreamError && (err.status === 429 || err.status === 402);
+    if (!throttled) throw err;
+    log("warn", { event: "primary_throttled", status: err.status, fallback: "pollinations" });
+    try {
+      const text = await callPollinations(messages, 0.4);
+      log("info", { event: "fallback_succeeded" });
+      return text;
+    } catch (fbErr) {
+      log("warn", { event: "fallback_failed", error: fbErr?.message });
+      throw err; // surface the original throttle error, not the fallback's
+    }
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -324,17 +364,14 @@ async function parseModelReply(rawText, historyMessages) {
 
   // One repair attempt: show the model its broken output and demand fixed JSON.
   try {
-    const repairText = await completeOnce(
-      [
-        ...historyMessages,
-        {
-          role: "user",
-          content:
-            "Your last reply was not valid JSON. Reply again with EXACTLY ONE valid JSON object using the same schema as your system instructions. No prose, no markdown, no code fences.",
-        },
-      ],
-      0
-    );
+    const repairText = await callAIWithRetry([
+      ...historyMessages,
+      {
+        role: "user",
+        content:
+          "Your last reply was not valid JSON. Reply again with EXACTLY ONE valid JSON object using the same schema as your system instructions. No prose, no markdown, no code fences.",
+      },
+    ]);
     const repaired = extractJson(repairText);
     if (repaired) {
       log("info", { event: "json_repair_succeeded" });
