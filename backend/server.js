@@ -171,6 +171,72 @@ async function callAnthropicRaw(messages, temperature) {
   }
 }
 
+/** Native Gemini provider — v1beta generateContent REST API.
+ *  Uses per-model free-tier quota, independent from the OpenAI-compatible
+ *  endpoint, so a throttled model on one path doesn't block the other. */
+async function callGeminiRaw(messages, temperature) {
+  if (!AI_API_KEY) {
+    throw new UpstreamError("Server is not configured with a Gemini API key.", 500);
+  }
+  const base = (process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, "");
+  const url = `${base}/models/${AI_MODEL}:generateContent`;
+
+  // Map to Gemini roles; merge consecutive same-role messages and ensure the
+  // conversation starts with a user message (API requirement).
+  const contents = [];
+  for (const m of messages) {
+    const role = m.role === "assistant" ? "model" : "user";
+    const text = String(m.content || "").trim() || " ";
+    const last = contents[contents.length - 1];
+    if (last && last.role === role) {
+      last.parts[0].text += "\n" + text;
+    } else {
+      contents.push({ role, parts: [{ text }] });
+    }
+  }
+  while (contents.length && contents[0].role !== "user") contents.shift();
+  if (!contents.length) throw new UpstreamError("No valid messages to send.", 500);
+
+  const body = JSON.stringify({
+    systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    contents,
+    generationConfig: { temperature, maxOutputTokens: AI_MAX_TOKENS },
+  });
+
+  const res = await fetchWithTimeout(
+    url,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": AI_API_KEY },
+      body,
+    },
+    AI_TIMEOUT_MS
+  );
+
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    throw new UpstreamError(`Gemini endpoint returned non-JSON (HTTP ${res.status})`, 502);
+  }
+
+  if (!res.ok) {
+    const detail = data?.error?.message || `HTTP ${res.status}`;
+    const code = data?.error?.code;
+    const status = code === 429 || res.status === 429 ? 429 : res.status >= 500 ? 502 : res.status;
+    throw new UpstreamError(`Gemini API error: ${detail}`, status);
+  }
+
+  const text = (data?.candidates?.[0]?.content?.parts || [])
+    .map((p) => p.text || "")
+    .join("");
+  if (!text.trim()) {
+    const reason = data?.candidates?.[0]?.finishReason || "unknown";
+    throw new UpstreamError(`Gemini API returned an empty reply (finishReason: ${reason}).`, 502);
+  }
+  return text;
+}
+
 /** OpenAI-compatible provider — parameters overridable for the fallback. */
 async function callOpenAICompatibleRaw(messages, temperature, overrides = {}) {
   const baseUrl = overrides.baseUrl || AI_BASE_URL;
@@ -215,8 +281,9 @@ async function callOpenAICompatibleRaw(messages, temperature, overrides = {}) {
 /** Single completion through the configured provider. */
 async function completeOnce(messages, temperature = 0.4) {
   if (AI_PROVIDER === "anthropic") return callAnthropicRaw(messages, temperature);
+  if (AI_PROVIDER === "gemini") return callGeminiRaw(messages, temperature);
   if (AI_PROVIDER === "openai-compatible") return callOpenAICompatibleRaw(messages, temperature);
-  throw new UpstreamError(`Unknown AI_PROVIDER "${AI_PROVIDER}". Use "anthropic" or "openai-compatible".`, 500);
+  throw new UpstreamError(`Unknown AI_PROVIDER "${AI_PROVIDER}". Use "gemini", "anthropic" or "openai-compatible".`, 500);
 }
 
 async function callAI(messages) {
@@ -224,27 +291,14 @@ async function callAI(messages) {
 }
 
 /**
- * Keyless Pollinations fallback — used only when the primary provider is
- * throttled (429) or its free quota is exhausted (402). No signup, no key.
- */
-async function callPollinations(messages, temperature) {
-  return callOpenAICompatibleRaw(messages, temperature, {
-    baseUrl: "https://text.pollinations.ai/openai",
-    model: "openai",
-    apiKey: "",
-  });
-}
-
-/**
- * Primary provider with retries and backoff.
+ * Resilient completion: primary provider with retries and backoff.
  * - 502/504 (transient): longer retries, likely to clear on their own.
- * - 429/402 (throttle/quota): only brief retries — if the primary is truly
- *   throttled, the caller falls back to Pollinations instead of making the
- *   user wait through a long backoff.
+ * - 429/402 (throttle/quota): brief retries only — sustained throttling
+ *   surfaces as a proper 429 so the client shows "busy, try again".
  */
-async function callPrimaryWithRetry(messages) {
+async function callAIWithRetry(messages) {
   const transientDelays = [1500, 6000, 18000];
-  const throttleDelays = [2000]; // one quick retry, then fall back — no long 429 waits
+  const throttleDelays = [2000];
   for (let attempt = 0; ; attempt++) {
     try {
       return await callAI(messages);
@@ -264,30 +318,6 @@ async function callPrimaryWithRetry(messages) {
         status: err.status,
       });
       await new Promise((r) => setTimeout(r, wait));
-    }
-  }
-}
-
-/**
- * Resilient completion: primary provider first, seamless Pollinations
- * fallback when the primary is throttled. The user never hits a 429 wall —
- * worst case they get an answer a few seconds later via the fallback.
- */
-async function callAIWithRetry(messages) {
-  try {
-    return await callPrimaryWithRetry(messages);
-  } catch (err) {
-    const throttled =
-      err instanceof UpstreamError && (err.status === 429 || err.status === 402);
-    if (!throttled) throw err;
-    log("warn", { event: "primary_throttled", status: err.status, fallback: "pollinations" });
-    try {
-      const text = await callPollinations(messages, 0.4);
-      log("info", { event: "fallback_succeeded" });
-      return text;
-    } catch (fbErr) {
-      log("warn", { event: "fallback_failed", error: fbErr?.message });
-      throw err; // surface the original throttle error, not the fallback's
     }
   }
 }
@@ -509,7 +539,7 @@ app.get("/ready", (_req, res) => {
       .status(503)
       .json({ ready: false, reason: "AI_PROVIDER=openai-compatible requires AI_BASE_URL" });
   }
-  if (!["anthropic", "openai-compatible"].includes(AI_PROVIDER)) {
+  if (!["anthropic", "gemini", "openai-compatible"].includes(AI_PROVIDER)) {
     return res.status(503).json({ ready: false, reason: `Unknown AI_PROVIDER "${AI_PROVIDER}"` });
   }
   res.json({ ready: true, provider: AI_PROVIDER, model: AI_MODEL });
