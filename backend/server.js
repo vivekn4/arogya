@@ -1,5 +1,6 @@
 /**
  * Arogya — Wellness Companion API
+ * Crafted by Vivek Nair (VN) — https://github.com/vivekn4
  * --------------------------------
  * Minimal, provider-agnostic Express backend for the Arogya chat UI.
  *

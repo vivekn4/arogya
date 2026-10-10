@@ -1,5 +1,6 @@
 /* ==========================================================================
    Arogya — wellness companion chat app
+   Crafted by Vivek Nair (VN) — https://github.com/vivekn4
    React 18 (UMD) + in-browser JSX via Babel standalone. Zero build step:
    deploy this folder as a static site.
    ========================================================================== */
@@ -911,6 +912,7 @@ function ChatScreen({ starter, onReset, onCrisis }) {
 
   const handleData = useCallback((data, history) => {
     const parsed = parseResponse(data);
+    if (window.VN_SFX) window.VN_SFX.chime(); // gentle reply chime
     histRef.current = [
       ...history,
       { role: "assistant", content: data.reply ? JSON.stringify(data.reply) : data.message || "" },
@@ -977,6 +979,7 @@ function ChatScreen({ starter, onReset, onCrisis }) {
       if (inputRef.current) inputRef.current.style.height = "44px";
       setQRs([]);
       setMessages((prev) => [...prev, { role: "user", message: t }]);
+      if (window.VN_SFX) window.VN_SFX.blip(); // serene send blip
       setLoading(true);
 
       const history = [...histRef.current, { role: "user", content: t }];

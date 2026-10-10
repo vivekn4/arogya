@@ -8,7 +8,7 @@
   <title>Arogya — Your Wellness Companion</title>
   <meta name="description" content="Feeling under the weather? Arogya asks a few gentle questions and suggests natural home remedies to help you feel better — free, private, and always calm." />
   <meta name="keywords" content="wellness, health, home remedies, natural remedies, symptom checker, feel better" />
-  <meta name="author" content="Arogya" />
+  <meta name="author" content="Vivek Nair (VN)" />
   <meta name="theme-color" content="#e8820c" />
   <meta name="color-scheme" content="light" />
 
@@ -77,6 +77,9 @@
   </div>
 
   <div id="root"></div>
+  <!-- Crafted by Vivek Nair (VN) — github.com/vivekn4 -->
+  <footer style="text-align:center;padding:16px;font:12px system-ui,sans-serif;color:#8a7a63">Designed &amp; built by VN</footer>
+  <button id="vn-sfx-toggle" aria-label="Toggle sound effects" title="Toggle sound effects">🔊</button>
 
   <noscript>
     <div style="max-width:420px;margin:80px auto;padding:24px;text-align:center;font-family:system-ui,sans-serif;color:#3d2b1a">
@@ -86,6 +89,8 @@
   </noscript>
 
   <!-- Runtime config: point the app at your backend here. -->
+  <script src="./sfx.js"></script>
+  <script src="./particles.js"></script>
   <script src="./config.js"></script>
   <script type="text/babel" data-presets="react" src="./app.js"></script>
 
@@ -98,6 +103,21 @@
           .catch((err) => console.error("Arogya: SW registration failed:", err));
       });
     }
+    // VN signature: sound-effects mute toggle (persists via VN_SFX)
+    (function () {
+      var btn = document.getElementById("vn-sfx-toggle");
+      function paint() {
+        var m = window.VN_SFX && window.VN_SFX.isMuted();
+        btn.textContent = m ? "🔇" : "🔊";
+        btn.setAttribute("aria-pressed", m ? "true" : "false");
+      }
+      btn.addEventListener("click", function () {
+        if (window.VN_SFX) { window.VN_SFX.toggleMute(); if (!window.VN_SFX.isMuted()) window.VN_SFX.blip(); }
+        paint();
+      });
+      if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", paint);
+      else paint();
+    })();
   </script>
 </body>
 </html>
