@@ -1,9 +1,14 @@
 # Arogya — Your Wellness Companion 🌿
 
+![header](https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=30,12&height=170&section=header&text=Arogya%20%F0%9F%8C%BF&fontSize=54&fontColor=3d2b1a&animation=fadeIn)
+
+![Arogya — serene wellness](assets/banner.png)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-saffron.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
 [![AI: free, no key](https://img.shields.io/badge/AI-free%20%E2%80%A2%20no%20API%20key-important.svg)](#how-it-works)
 ![No build step](https://img.shields.io/badge/frontend-zero%20build-blue.svg)
+![Made by VN](https://img.shields.io/badge/made%20by-VN-blue)
 
 A calm, private, AI-powered wellness companion. Pick a body area, answer a few gentle questions (symptoms → duration → severity), and get natural home-remedy suggestions — with safety guardrails at every step.
 
@@ -24,6 +29,11 @@ A calm, private, AI-powered wellness companion. Pick a body area, answer a few g
 - 📱 **Installable PWA** — real `manifest.json`, icons, offline-aware service worker, splash screen
 - ♿ **Accessible** — skip link, focus-visible rings, ARIA labels/live regions, keyboard-operable modal, `prefers-reduced-motion` support, AA-hardened text contrast
 - 🤖 **Free AI out of the box** — runs on the keyless Pollinations text API ($0, no signup); swap to Anthropic or any OpenAI-compatible endpoint with env vars
+- ✨ **Serene ambience** — floating particle glow, a slow breathing gradient, and soft WebAudio chimes (mutable, one tap) — calm, never noisy
+
+## Screenshots
+
+> 📸 Screenshots coming soon — the app is live at the Render link above if you'd like a tour in the meantime.
 
 ## How it works
 
@@ -195,3 +205,7 @@ See [SECURITY.md](SECURITY.md) for reporting vulnerabilities and how data is han
 ## License
 
 MIT © 2026 Vivek Nair — see [LICENSE](LICENSE).
+
+---
+
+**Crafted by [Vivek Nair](https://github.com/vivekn4) · VN**
