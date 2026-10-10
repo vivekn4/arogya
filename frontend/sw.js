@@ -1,5 +1,6 @@
 /* ==========================================================================
    Arogya service worker
+   Crafted by Vivek Nair (VN) — https://github.com/vivekn4
    - Precache the app shell on install (each asset added individually so one
      missing file can't fail the whole install).
    - Cache-first for same-origin static assets.
@@ -14,6 +15,8 @@ const PRECACHE = [
   "./index.html",
   "./styles.css",
   "./config.js",
+  "./sfx.js",
+  "./particles.js",
   "./app.js",
   "./manifest.json",
   "./icons/favicon.svg",
