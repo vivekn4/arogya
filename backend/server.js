@@ -38,7 +38,11 @@ const AI_API_KEY = (process.env.AI_API_KEY || "").trim();
 const AI_BASE_URL = (process.env.AI_BASE_URL || "https://text.pollinations.ai/openai").replace(/\/+$/, "");
 const AI_MODEL =
   process.env.AI_MODEL ||
-  (AI_PROVIDER === "anthropic" ? "claude-sonnet-4-5" : "openai");
+  (AI_PROVIDER === "anthropic"
+    ? "claude-sonnet-4-5"
+    : AI_PROVIDER === "gemini"
+      ? "gemini-flash-latest"
+      : "openai");
 const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS) || 60_000;
 const AI_MAX_TOKENS = Number(process.env.AI_MAX_TOKENS) || 900;
 const FRONTEND_URL = (process.env.FRONTEND_URL || "").trim();
@@ -664,6 +668,11 @@ app.get("/ready", (_req, res) => {
       .status(503)
       .json({ ready: false, reason: "AI_PROVIDER=anthropic requires AI_API_KEY" });
   }
+  if (AI_PROVIDER === "gemini" && !AI_API_KEY) {
+    return res
+      .status(503)
+      .json({ ready: false, reason: "AI_PROVIDER=gemini requires AI_API_KEY" });
+  }
   if (AI_PROVIDER === "openai-compatible" && !AI_BASE_URL) {
     return res
       .status(503)
@@ -778,8 +787,8 @@ const server = process.env.AROGYA_NO_LISTEN === "1" ? null : app.listen(PORT, ()
   if (!allowedOrigins.length) {
     log("warn", { event: "cors_open", hint: "Set FRONTEND_URL to lock the API to your site." });
   }
-  if (AI_PROVIDER === "anthropic" && !AI_API_KEY) {
-    log("warn", { event: "missing_key", hint: "AI_PROVIDER=anthropic requires AI_API_KEY." });
+  if ((AI_PROVIDER === "anthropic" || AI_PROVIDER === "gemini") && !AI_API_KEY) {
+    log("warn", { event: "missing_key", hint: `AI_PROVIDER=${AI_PROVIDER} requires AI_API_KEY.` });
   }
   if (AI_PROVIDER === "openai-compatible" && !AI_API_KEY) {
     log("info", { event: "keyless_mode", hint: "No AI_API_KEY — using the endpoint keyless (fine for Pollinations)." });
