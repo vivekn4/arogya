@@ -66,6 +66,8 @@
   window.VN_SFX = {
     // soft send blip
     blip: function () { tone(520, 780, 0.16, 0.06, "sine"); },
+    // single soft meditation bell — one gentle sine, slow decay
+    bell: function () { tone(528, 528, 1.4, 0.045, "sine"); },
     // gentle two-note reply chime (pentatonic, calming)
     chime: function () { tone(659.25, 659.25, 0.5, 0.05, "sine"); tone(880, 880, 0.7, 0.04, "sine", 0.12); },
     // subtle transition whoosh

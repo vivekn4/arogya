@@ -8,7 +8,7 @@
    - Navigation requests fall back to the cached app shell when offline.
    ========================================================================== */
 
-const CACHE = "arogya-v2";
+const CACHE = "arogya-v3";
 
 const PRECACHE = [
   "./",
@@ -17,6 +17,7 @@ const PRECACHE = [
   "./config.js",
   "./sfx.js",
   "./particles.js",
+  "./calm.js",
   "./app.js",
   "./manifest.json",
   "./icons/favicon.svg",
