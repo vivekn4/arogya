@@ -28,11 +28,12 @@ A calm, private, AI-powered wellness companion. Pick a body area, answer a few g
   - Client-side crisis detection → full-screen support screen (988, Crisis Text Line, IASP directory, 911/999/112)
   - Emergency-symptom detection (chest pain, stroke, seizure, …) → immediate "call emergency services" card
   - Calm, non-alarming language for serious symptoms + "see a doctor" nudges
-- 🔒 **Privacy-first** — anonymous, no accounts, no storage; the backend logs request counts only, never message contents
+- 🔒 **Privacy-first** — anonymous, no accounts, no chat storage; the backend logs request counts only, never message contents. Calm Hub data (moods, habits, sessions) lives only in your browser's localStorage
 - 📱 **Installable PWA** — real `manifest.json`, icons, offline-aware service worker, splash screen
 - ♿ **Accessible** — skip link, focus-visible rings, ARIA labels/live regions, keyboard-operable modal, `prefers-reduced-motion` support, AA-hardened text contrast
 - 🤖 **Free AI out of the box** — runs on the keyless Pollinations text API ($0, no signup); swap to Anthropic or any OpenAI-compatible endpoint with env vars
 - ✨ **Serene ambience** — floating particle glow, a slow breathing gradient, and soft WebAudio chimes (mutable, one tap) — calm, never noisy
+- 🧘 **Calm Hub** — local-only (nothing ever leaves your device): guided breathing (4-7-8, Box, Coherent, Extended Exhale, Triangle + custom), a quiet meditation timer (3–20 min presets + open-ended), daily mood check-in with a 7-day strip, gentle habits with streaks + a forgiving strength score, streak freezes (2/month), and a 30-day consistency score
 
 ## How it works
 
