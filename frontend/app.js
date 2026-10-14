@@ -84,6 +84,7 @@ const PRIVACY = [
       "Symptom descriptions — processed in real time only, never stored",
       "Anonymous usage analytics (session length, feature usage)",
       "Device type and OS for crash reporting",
+      "Calm Hub check-ins, habits, and session lengths — stored ONLY on your device (localStorage), never sent to us",
     ],
   },
   {
@@ -550,7 +551,7 @@ function OfflineScreen() {
   );
 }
 
-function WelcomeScreen({ onStart, onShowPrivacy }) {
+function WelcomeScreen({ onStart, onShowPrivacy, onOpenCalm }) {
   const starters = [
     { ic: "🤕", label: "I have a headache", msg: "I have a headache" },
     { ic: "🤒", label: "Feeling feverish", msg: "I'm feeling feverish" },
@@ -601,6 +602,9 @@ function WelcomeScreen({ onStart, onShowPrivacy }) {
       </div>
       <button className="start-btn" onClick={() => onStart()}>
         Chat with Arogya 🌼
+      </button>
+      <button className="start-btn calm-entry-btn" onClick={onOpenCalm}>
+        🧘 Breathe &amp; check in — Calm Hub
       </button>
       <p className="welcome-foot">
         <span aria-hidden="true">🔒</span> Anonymous &nbsp;·&nbsp;
@@ -879,7 +883,7 @@ function SummaryCard({ symptoms, remedies, doctorNote }) {
   );
 }
 
-function ChatScreen({ starter, onReset, onCrisis }) {
+function ChatScreen({ starter, onReset, onCrisis, onOpenCalm }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(true);
@@ -1102,6 +1106,9 @@ function ChatScreen({ starter, onReset, onCrisis }) {
         <button className="new-btn" onClick={onReset} aria-label="Start a new chat">
           ✕ New Chat
         </button>
+        <button className="new-btn" onClick={onOpenCalm} aria-label="Open Calm Hub — breathing, timer, check-in">
+          🧘 Calm
+        </button>
       </header>
 
       {symptoms.length > 0 && (
@@ -1244,6 +1251,742 @@ function ChatScreen({ starter, onReset, onCrisis }) {
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* Calm Hub — Breathe · Quiet timer · Daily check-in · Progress        */
+/* Local-only: everything lives in localStorage via window.VN_CALM.   */
+/* ------------------------------------------------------------------ */
+
+function BreathePanel({ calm, commit }) {
+  const C = window.VN_CALM;
+  const [techId, setTechId] = useState("478");
+  const [custom, setCustom] = useState({ inhale: 4, inhaleHold: 0, exhale: 4, exhaleHold: 0 });
+  const [durationMin, setDurationMin] = useState(3);
+  const [running, setRunning] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [display, setDisplay] = useState({ phase: "ready", left: 0, phaseSeconds: 4, elapsed: 0, cycles: 0 });
+  const [doneMsg, setDoneMsg] = useState("");
+  const sessRef = useRef(null);
+  const elapsedRef = useRef(0);
+  const calmRef = useRef(calm);
+  calmRef.current = calm;
+
+  useEffect(() => () => clearInterval(sessRef.current?.iv), []);
+
+  const techFor = () => {
+    if (techId === "custom") return { ...custom, id: "custom", name: "Custom Pattern" };
+    return C.TECHNIQUES.find((t) => t.id === techId) || C.TECHNIQUES[0];
+  };
+  const tech = techFor();
+
+  const finish = (elapsedSec) => {
+    clearInterval(sessRef.current?.iv);
+    sessRef.current = null;
+    setRunning(false);
+    setPaused(false);
+    if (window.VN_SFX) window.VN_SFX.success();
+    if (elapsedSec >= C.MIN_COUNTED_SECONDS) {
+      commit(C.recordSession(calmRef.current, "breathe", elapsedSec));
+      setDoneMsg(`Lovely — ${Math.round(elapsedSec / 60)} min of breathing saved to your progress. 🌼`);
+    } else {
+      setDoneMsg("Session ended. Even a few slow breaths count — come back anytime. 🌿");
+    }
+    setDisplay((d) => ({ ...d, phase: "ready", left: 0 }));
+  };
+
+  const tick = () => {
+    const st = sessRef.current;
+    if (!st) return;
+    const now = Date.now();
+    let { phaseIdx, phaseEndsAt, cycles } = st;
+    while (now >= phaseEndsAt) {
+      phaseIdx += 1;
+      if (phaseIdx >= st.seq.length) {
+        phaseIdx = 0;
+        cycles += 1;
+      }
+      phaseEndsAt += st.seq[phaseIdx].seconds * 1000;
+      if (window.VN_SFX) window.VN_SFX.bell();
+    }
+    st.phaseIdx = phaseIdx;
+    st.phaseEndsAt = phaseEndsAt;
+    st.cycles = cycles;
+    const left = Math.max(0, (phaseEndsAt - now) / 1000);
+    const elapsed = Math.min(st.durationSec, (now - st.startedAt) / 1000);
+    elapsedRef.current = elapsed;
+    setDisplay({ phase: st.seq[phaseIdx].phase, left, phaseSeconds: st.seq[phaseIdx].seconds, elapsed, cycles });
+    if (now >= st.sessionEndsAt) finish(st.durationSec);
+  };
+
+  const start = () => {
+    const seq = C.phaseSequence(tech);
+    if (!seq.length) return;
+    const now = Date.now();
+    sessRef.current = {
+      seq,
+      phaseIdx: 0,
+      phaseEndsAt: now + seq[0].seconds * 1000,
+      sessionEndsAt: now + durationMin * 60000,
+      durationSec: durationMin * 60,
+      startedAt: now,
+      cycles: 0,
+    };
+    elapsedRef.current = 0;
+    setRunning(true);
+    setPaused(false);
+    setDoneMsg("");
+    setDisplay({ phase: seq[0].phase, left: seq[0].seconds, phaseSeconds: seq[0].seconds, elapsed: 0, cycles: 0 });
+    if (window.VN_SFX) window.VN_SFX.bell();
+    sessRef.current.iv = setInterval(tick, 200);
+  };
+
+  const pause = () => {
+    const st = sessRef.current;
+    if (!st) return;
+    clearInterval(st.iv);
+    st.phaseLeftMs = Math.max(0, st.phaseEndsAt - Date.now());
+    st.sessionLeftMs = Math.max(0, st.sessionEndsAt - Date.now());
+    setPaused(true);
+  };
+
+  const resume = () => {
+    const st = sessRef.current;
+    if (!st) return;
+    const now = Date.now();
+    st.phaseEndsAt = now + (st.phaseLeftMs || 0);
+    st.sessionEndsAt = now + (st.sessionLeftMs || 0);
+    setPaused(false);
+    st.iv = setInterval(tick, 200);
+  };
+
+  const stop = () => {
+    const el = elapsedRef.current;
+    clearInterval(sessRef.current?.iv);
+    sessRef.current = null;
+    setRunning(false);
+    setPaused(false);
+    setDisplay((d) => ({ ...d, phase: "ready", left: 0 }));
+    if (el >= C.MIN_COUNTED_SECONDS) {
+      commit(C.recordSession(calmRef.current, "breathe", el));
+      setDoneMsg(`Saved ${Math.round(el / 60)} min of breathing to your progress. 🌼`);
+    } else {
+      setDoneMsg("Session stopped — no pressure, try again whenever you like. 🌿");
+    }
+  };
+
+  const scale = display.phase === "inhale" || display.phase === "inhaleHold" ? 1.32 : 1;
+  const progress = durationMin > 0 ? Math.min(100, (display.elapsed / (durationMin * 60)) * 100) : 0;
+  const clampNum = (v, dflt) => {
+    const n = parseInt(v, 10);
+    if (Number.isNaN(n)) return dflt;
+    return Math.max(0, Math.min(20, n));
+  };
+
+  return (
+    <div className="calm-panel">
+      <div className="calm-tech-row">
+        <label className="calm-lbl" htmlFor="calm-tech">
+          Technique
+        </label>
+        <select
+          id="calm-tech"
+          className="calm-select"
+          value={techId}
+          disabled={running}
+          onChange={(e) => setTechId(e.target.value)}
+        >
+          {C.TECHNIQUES.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name} · {t.inhale}-{t.inhaleHold}-{t.exhale}-{t.exhaleHold}
+            </option>
+          ))}
+        </select>
+      </div>
+      <p className="calm-tech-blurb">{tech.blurb}</p>
+      <p className="calm-tech-best">{tech.bestFor}</p>
+
+      {techId === "custom" && (
+        <div className="calm-custom">
+          {[
+            ["inhale", "Breathe in (s)"],
+            ["inhaleHold", "Hold (s)"],
+            ["exhale", "Breathe out (s)"],
+            ["exhaleHold", "Hold (s)"],
+          ].map(([key, label]) => (
+            <label key={key} className="calm-num-lbl">
+              {label}
+              <input
+                type="number"
+                min="0"
+                max="20"
+                className="calm-num"
+                value={custom[key]}
+                disabled={running}
+                onChange={(e) => setCustom((c) => ({ ...c, [key]: clampNum(e.target.value, c[key]) }))}
+              />
+            </label>
+          ))}
+        </div>
+      )}
+
+      <div className="calm-dur-row" role="group" aria-label="Session length">
+        <span className="calm-lbl">Session</span>
+        {C.BREATHE_DURATIONS_MIN.map((m) => (
+          <button
+            key={m}
+            className={`calm-chip${durationMin === m ? " on" : ""}`}
+            disabled={running}
+            onClick={() => setDurationMin(m)}
+          >
+            {m} min
+          </button>
+        ))}
+      </div>
+
+      <div className="calm-stage">
+        <div
+          className={`calm-circle phase-${display.phase}`}
+          style={{
+            transform: `scale(${running && !paused ? scale : 1})`,
+            transitionDuration: running && !paused ? `${display.phaseSeconds}s` : "0.4s",
+          }}
+          aria-hidden="true"
+        >
+          <span className="calm-circle-inner">🌿</span>
+        </div>
+        <div className="calm-phase" role="status" aria-live="polite">
+          {running ? C.PHASE_LABELS[display.phase] : doneMsg || "Ready when you are"}
+        </div>
+        {running && (
+          <div className="calm-counts">
+            <span>{Math.ceil(display.left)}s</span>
+            <span aria-hidden="true">·</span>
+            <span>
+              {display.cycles} {display.cycles === 1 ? "breath" : "breaths"}
+            </span>
+            <span aria-hidden="true">·</span>
+            <span>
+              {Math.floor(display.elapsed / 60)}:{String(Math.floor(display.elapsed % 60)).padStart(2, "0")} / {durationMin}:00
+            </span>
+          </div>
+        )}
+        <div className="calm-progress" aria-hidden="true">
+          <div className="calm-progress-fill" style={{ width: `${progress}%` }} />
+        </div>
+      </div>
+
+      <div className="calm-actions">
+        {!running && (
+          <button className="primary-btn" onClick={start}>
+            Start breathing 🌼
+          </button>
+        )}
+        {running && !paused && (
+          <button className="primary-btn" onClick={pause}>
+            Pause
+          </button>
+        )}
+        {running && paused && (
+          <button className="primary-btn" onClick={resume}>
+            Resume
+          </button>
+        )}
+        {running && (
+          <button className="calm-ghost-btn" onClick={stop}>
+            End session
+          </button>
+        )}
+      </div>
+      {doneMsg && !running && (
+        <p className="calm-done" role="status">
+          {doneMsg}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function TimerPanel({ calm, commit }) {
+  const C = window.VN_CALM;
+  const [mode, setMode] = useState("countdown");
+  const [presetMin, setPresetMin] = useState(10);
+  const [customMin, setCustomMin] = useState("");
+  const [running, setRunning] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [shown, setShown] = useState(0); // seconds displayed
+  const [doneMsg, setDoneMsg] = useState("");
+  const tRef = useRef(null);
+  const elapsedRef = useRef(0);
+  const calmRef = useRef(calm);
+  calmRef.current = calm;
+
+  useEffect(() => () => clearInterval(tRef.current?.iv), []);
+
+  const totalSec = () => {
+    if (mode === "stopwatch") return 0;
+    const custom = parseInt(customMin, 10);
+    if (!Number.isNaN(custom) && custom >= 1 && custom <= 240) return custom * 60;
+    return presetMin * 60;
+  };
+
+  const finish = (elapsedSec, completed) => {
+    clearInterval(tRef.current?.iv);
+    tRef.current = null;
+    setRunning(false);
+    setPaused(false);
+    if (completed && window.VN_SFX) window.VN_SFX.success();
+    else if (window.VN_SFX) window.VN_SFX.bell();
+    if (elapsedSec >= C.MIN_COUNTED_SECONDS) {
+      commit(C.recordSession(calmRef.current, "timer", elapsedSec));
+      setDoneMsg(
+        completed
+          ? `Beautiful — ${Math.round(elapsedSec / 60)} quiet minutes saved. 🌼`
+          : `Saved ${Math.round(elapsedSec / 60)} min of quiet time to your progress. 🌿`
+      );
+    } else {
+      setDoneMsg("Sessions of a minute or more count toward your streak. 🌿");
+    }
+  };
+
+  const tick = () => {
+    const st = tRef.current;
+    if (!st) return;
+    const now = Date.now();
+    const elapsed = (now - st.startedAt) / 1000;
+    elapsedRef.current = elapsed;
+    if (st.mode === "countdown") {
+      const left = Math.max(0, st.total - elapsed);
+      setShown(left);
+      if (left <= 0) finish(st.total, true);
+    } else {
+      setShown(elapsed);
+    }
+  };
+
+  const start = () => {
+    const now = Date.now();
+    const total = totalSec();
+    tRef.current = { mode, total, startedAt: now };
+    elapsedRef.current = 0;
+    setShown(mode === "countdown" ? total : 0);
+    setRunning(true);
+    setPaused(false);
+    setDoneMsg("");
+    if (window.VN_SFX) window.VN_SFX.bell();
+    tRef.current.iv = setInterval(tick, 200);
+  };
+
+  const pause = () => {
+    const st = tRef.current;
+    if (!st) return;
+    clearInterval(st.iv);
+    st.pausedElapsed = elapsedRef.current;
+    setPaused(true);
+  };
+
+  const resume = () => {
+    const st = tRef.current;
+    if (!st) return;
+    st.startedAt = Date.now() - (st.pausedElapsed || 0) * 1000;
+    setPaused(false);
+    st.iv = setInterval(tick, 200);
+  };
+
+  const stop = () => {
+    finish(elapsedRef.current, false);
+  };
+
+  const mm = Math.floor(shown / 60);
+  const ss = String(Math.floor(shown % 60)).padStart(2, "0");
+
+  return (
+    <div className="calm-panel">
+      <p className="calm-panel-intro">
+        Sit comfortably, soften your shoulders, and just be here. A soft bell marks the start and the end.
+      </p>
+      <div className="calm-dur-row" role="group" aria-label="Timer mode">
+        <button className={`calm-chip${mode === "countdown" ? " on" : ""}`} disabled={running} onClick={() => setMode("countdown")}>
+          Countdown
+        </button>
+        <button className={`calm-chip${mode === "stopwatch" ? " on" : ""}`} disabled={running} onClick={() => setMode("stopwatch")}>
+          Open-ended
+        </button>
+      </div>
+      {mode === "countdown" && (
+        <div className="calm-dur-row" role="group" aria-label="Timer length">
+          <span className="calm-lbl">Length</span>
+          {C.TIMER_PRESETS_MIN.map((m) => (
+            <button
+              key={m}
+              className={`calm-chip${presetMin === m && !customMin ? " on" : ""}`}
+              disabled={running}
+              onClick={() => {
+                setPresetMin(m);
+                setCustomMin("");
+              }}
+            >
+              {m} min
+            </button>
+          ))}
+          <label className="calm-num-lbl">
+            Custom (min)
+            <input
+              type="number"
+              min="1"
+              max="240"
+              className="calm-num"
+              value={customMin}
+              disabled={running}
+              placeholder="—"
+              onChange={(e) => setCustomMin(e.target.value)}
+            />
+          </label>
+        </div>
+      )}
+      <div className="calm-timer-readout" role="timer" aria-live="off">
+        {mm}:{ss}
+      </div>
+      <div className="calm-actions">
+        {!running && (
+          <button className="primary-btn" onClick={start}>
+            Start quiet time 🔔
+          </button>
+        )}
+        {running && !paused && (
+          <button className="primary-btn" onClick={pause}>
+            Pause
+          </button>
+        )}
+        {running && paused && (
+          <button className="primary-btn" onClick={resume}>
+            Resume
+          </button>
+        )}
+        {running && (
+          <button className="calm-ghost-btn" onClick={stop}>
+            End session
+          </button>
+        )}
+      </div>
+      {doneMsg && !running && (
+        <p className="calm-done" role="status">
+          {doneMsg}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function CheckInPanel({ calm, commit }) {
+  const C = window.VN_CALM;
+  const today = C.todayKey();
+  const todayMood = calm.moods[today];
+  const [moodId, setMoodId] = useState(todayMood?.mood || "");
+  const [note, setNote] = useState(todayMood?.note || "");
+  const [savedFlash, setSavedFlash] = useState(false);
+  const [newHabit, setNewHabit] = useState("");
+  const [newFreq, setNewFreq] = useState("daily");
+  const [showArchived, setShowArchived] = useState(false);
+
+  const saveMood = () => {
+    if (!moodId) return;
+    commit(C.setMood(calm, today, moodId, note));
+    setSavedFlash(true);
+    setTimeout(() => setSavedFlash(false), 2500);
+  };
+
+  const add = () => {
+    if (!newHabit.trim()) return;
+    commit(C.addHabit(calm, newHabit, newFreq));
+    setNewHabit("");
+  };
+
+  const dayName = (key) => {
+    const d = new Date(Number(key.slice(0, 4)), Number(key.slice(5, 7)) - 1, Number(key.slice(8, 10)));
+    return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()];
+  };
+
+  const activeHabits = calm.habits.filter((h) => !h.archived);
+  const archivedHabits = calm.habits.filter((h) => h.archived);
+
+  return (
+    <div className="calm-panel">
+      <h3 className="calm-subhead">How are you feeling today?</h3>
+      <div className="calm-moods" role="radiogroup" aria-label="Mood today">
+        {C.MOODS.map((m) => (
+          <button
+            key={m.id}
+            className={`calm-mood${moodId === m.id ? " on" : ""}`}
+            role="radio"
+            aria-checked={moodId === m.id}
+            onClick={() => setMoodId(m.id)}
+          >
+            <span aria-hidden="true">{m.ic}</span>
+            <span>{m.label}</span>
+          </button>
+        ))}
+      </div>
+      <textarea
+        className="calm-note"
+        aria-label="A few words about today (optional)"
+        placeholder="A few words about today, if you'd like… (stays on this device)"
+        value={note}
+        rows={2}
+        maxLength={280}
+        onChange={(e) => setNote(e.target.value)}
+      />
+      <div className="calm-actions">
+        <button className="primary-btn" disabled={!moodId} onClick={saveMood}>
+          {savedFlash ? "✓ Saved — thank you" : "Save today's check-in"}
+        </button>
+      </div>
+
+      <div className="calm-strip" aria-label="Mood over the last 7 days">
+        {C.moodStrip(calm).map((d) => {
+          const meta = C.MOODS.find((m) => m.id === d.entry?.mood);
+          return (
+            <div key={d.date} className="calm-strip-day" title={d.entry ? `${d.date}: ${meta?.label || ""}` : d.date}>
+              <span className="calm-strip-ic" aria-hidden="true">
+                {meta ? meta.ic : "·"}
+              </span>
+              <span className="calm-strip-lbl">{d.date === today ? "Today" : dayName(d.date)}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      <h3 className="calm-subhead">Gentle habits</h3>
+      <p className="calm-hint">
+        Small, repeatable, kind. Skip a day without guilt — a skip pauses your streak, it never punishes it.
+      </p>
+      <div className="calm-addhabit">
+        <input
+          className="calm-input"
+          aria-label="New habit name"
+          placeholder="e.g. Drink a glass of water"
+          value={newHabit}
+          maxLength={80}
+          onChange={(e) => setNewHabit(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") add();
+          }}
+        />
+        <select className="calm-select" aria-label="How often" value={newFreq} onChange={(e) => setNewFreq(e.target.value)}>
+          {C.FREQUENCIES.map((f) => (
+            <option key={f.id} value={f.id}>
+              {f.label}
+            </option>
+          ))}
+        </select>
+        <button className="primary-btn" disabled={!newHabit.trim()} onClick={add}>
+          Add habit
+        </button>
+      </div>
+
+      {activeHabits.length === 0 && (
+        <p className="calm-empty">No habits yet. Try one: “Step outside for 5 minutes”, “Stretch before bed”, “One glass of water”.</p>
+      )}
+      <div className="calm-habits">
+        {activeHabits.map((h) => {
+          const log = calm.logs[h.id] || {};
+          const stats = C.habitStats(h, log);
+          const entry = log[today];
+          const freq = C.frequencyFor(h);
+          return (
+            <div className="calm-habit" key={h.id}>
+              <div className="calm-habit-top">
+                <div>
+                  <strong>{h.name}</strong>
+                  <span className="calm-habit-meta">
+                    {freq.label} · 🔥 {stats.streak}-day streak · best {stats.bestStreak}
+                  </span>
+                </div>
+                <button
+                  className="calm-mini"
+                  aria-label={`Archive habit ${h.name}`}
+                  onClick={() => commit(C.setHabitArchived(calm, h.id, true))}
+                >
+                  Archive
+                </button>
+              </div>
+              <div className="calm-strength" aria-label={`Habit strength ${Math.round(stats.strength * 100)} percent`}>
+                <div className="calm-strength-fill" style={{ width: `${Math.round(stats.strength * 100)}%` }} />
+              </div>
+              <div className="calm-habit-week">
+                This week: {stats.weekDone} / {stats.weekTarget}
+              </div>
+              <div className="calm-habit-actions">
+                {entry ? (
+                  <>
+                    <span className="calm-entry-state">{entry === "done" ? "✓ Done today" : "⏭ Skipped today"}</span>
+                    <button className="calm-mini" onClick={() => commit(C.clearHabitLog(calm, h.id, today))}>
+                      Undo
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button className="calm-done-btn" onClick={() => commit(C.logHabit(calm, h.id, today, "done"))}>
+                      ✓ Done
+                    </button>
+                    <button className="calm-skip-btn" onClick={() => commit(C.logHabit(calm, h.id, today, "skip"))}>
+                      Skip today
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {archivedHabits.length > 0 && (
+        <div className="calm-archived">
+          <button className="linklike" onClick={() => setShowArchived((v) => !v)}>
+            {showArchived ? "Hide archived habits" : `Show ${archivedHabits.length} archived habit(s)`}
+          </button>
+          {showArchived &&
+            archivedHabits.map((h) => (
+              <div className="calm-habit archived" key={h.id}>
+                <strong>{h.name}</strong>
+                <button className="calm-mini" onClick={() => commit(C.setHabitArchived(calm, h.id, false))}>
+                  Restore
+                </button>
+              </div>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProgressPanel({ calm }) {
+  const C = window.VN_CALM;
+  const streak = C.calmStreak(calm);
+  const cons = C.consistency(calm);
+  const t = C.totals(calm);
+  const fmtMin = (sec) => {
+    if (sec < 60) return `${sec}s`;
+    if (sec < 3600) return `${Math.round(sec / 60)} min`;
+    return `${(sec / 3600).toFixed(1)} hr`;
+  };
+  return (
+    <div className="calm-panel">
+      <div className="calm-stats-grid">
+        <div className="calm-stat">
+          <div className="calm-stat-big">🔥 {streak}</div>
+          <div className="calm-stat-lbl">{streak === 1 ? "calm day in a row" : "calm days in a row"}</div>
+          <p className="calm-stat-note">Any check-in, habit, or 1-minute session counts.</p>
+        </div>
+        <div className="calm-stat">
+          <div className="calm-stat-big">🧊 {calm.freezesRemaining} / {C.MAX_FREEZES}</div>
+          <div className="calm-stat-lbl">streak freezes left</div>
+          <p className="calm-stat-note">A missed day uses a freeze instead of breaking your streak. Refills monthly.</p>
+        </div>
+        <div className="calm-stat">
+          <div className="calm-stat-big">{Math.round(cons * 100)}%</div>
+          <div className="calm-stat-lbl">consistency · last 30 days</div>
+          <div className="calm-strength" aria-hidden="true">
+            <div className="calm-strength-fill" style={{ width: `${Math.round(cons * 100)}%` }} />
+          </div>
+          <p className="calm-stat-note">Steady beats perfect — a gentle measure for imperfect weeks.</p>
+        </div>
+        <div className="calm-stat">
+          <div className="calm-stat-big">{t.sessions}</div>
+          <div className="calm-stat-lbl">mindful sessions</div>
+          <p className="calm-stat-note">
+            {fmtMin(t.breatheSec)} breathing · {fmtMin(t.timerSec)} quiet time
+          </p>
+        </div>
+      </div>
+      <h3 className="calm-subhead">Habit strength</h3>
+      {calm.habits.filter((h) => !h.archived).length === 0 && (
+        <p className="calm-empty">Add a habit in Check-in and it will grow here, one kind day at a time.</p>
+      )}
+      {calm.habits
+        .filter((h) => !h.archived)
+        .map((h) => {
+          const stats = C.habitStats(h, calm.logs[h.id] || {});
+          return (
+            <div className="calm-habit" key={h.id}>
+              <div className="calm-habit-top">
+                <strong>{h.name}</strong>
+                <span className="calm-habit-meta">
+                  {Math.round(stats.strength * 100)}% · 🔥 {stats.streak} · best {stats.bestStreak}
+                </span>
+              </div>
+              <div className="calm-strength" aria-hidden="true">
+                <div className="calm-strength-fill" style={{ width: `${Math.round(stats.strength * 100)}%` }} />
+              </div>
+            </div>
+          );
+        })}
+      <p className="calm-foot-note">
+        Everything on this page lives only on your device. Clearing this site's data erases it — nothing is ever uploaded.
+      </p>
+    </div>
+  );
+}
+
+function CalmHub({ onBack }) {
+  const C = window.VN_CALM;
+  const [calm, setCalm] = useState(() => C.load());
+  const [tab, setTab] = useState("breathe");
+
+  const commit = useCallback(
+    (next) => {
+      const settled = C.settle(next);
+      C.save(settled);
+      setCalm(settled);
+    },
+    [C]
+  );
+
+  const tabs = [
+    { id: "breathe", label: "🫁 Breathe" },
+    { id: "timer", label: "🔔 Quiet timer" },
+    { id: "checkin", label: "💛 Check-in" },
+    { id: "progress", label: "🌱 Progress" },
+  ];
+
+  return (
+    <div className="calm">
+      <header className="chat-head">
+        <div className="av" aria-hidden="true">
+          🧘
+        </div>
+        <div className="hinfo">
+          <h2>Calm Hub</h2>
+          <span>
+            <span className="odot" aria-hidden="true" />
+            Breathe · check in · grow gently
+          </span>
+        </div>
+        <button className="new-btn" onClick={onBack} aria-label="Back">
+          ← Back
+        </button>
+      </header>
+      <div className="calm-tabs" role="tablist" aria-label="Calm Hub sections">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            role="tab"
+            aria-selected={tab === t.id}
+            className={`calm-tab${tab === t.id ? " on" : ""}`}
+            onClick={() => setTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div className="calm-body">
+        {tab === "breathe" && <BreathePanel calm={calm} commit={commit} />}
+        {tab === "timer" && <TimerPanel calm={calm} commit={commit} />}
+        {tab === "checkin" && <CheckInPanel calm={calm} commit={commit} />}
+        {tab === "progress" && <ProgressPanel calm={calm} />}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [screen, setScreen] = useState("disclaimer");
   const [showPrivacy, setShowPrivacy] = useState(false);
@@ -1251,6 +1994,7 @@ function App() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [chatKey, setChatKey] = useState(0);
   const [starter, setStarter] = useState("");
+  const [calmFrom, setCalmFrom] = useState("welcome");
 
   useEffect(() => {
     const splash = document.getElementById("splash");
@@ -1281,6 +2025,11 @@ function App() {
     setScreen("chat");
   }, []);
 
+  const openCalm = useCallback((from) => {
+    setCalmFrom(from || "welcome");
+    setScreen("calm");
+  }, []);
+
   return (
     <div className="app">
       {showCrisis && <CrisisScreen onBack={() => setShowCrisis(false)} />}
@@ -1289,7 +2038,11 @@ function App() {
         <DisclaimerScreen onAccept={() => setScreen("welcome")} onShowPrivacy={() => setShowPrivacy(true)} />
       )}
       {screen === "welcome" && isOnline && (
-        <WelcomeScreen onStart={goToChat} onShowPrivacy={() => setShowPrivacy(true)} />
+        <WelcomeScreen
+          onStart={goToChat}
+          onShowPrivacy={() => setShowPrivacy(true)}
+          onOpenCalm={() => openCalm("welcome")}
+        />
       )}
       {screen === "chat" && isOnline && (
         <ChatScreen
@@ -1297,8 +2050,10 @@ function App() {
           starter={starter}
           onReset={() => setScreen("welcome")}
           onCrisis={() => setShowCrisis(true)}
+          onOpenCalm={() => openCalm("chat")}
         />
       )}
+      {screen === "calm" && <CalmHub onBack={() => setScreen(calmFrom)} />}
       {showPrivacy && <PrivacyModal onClose={() => setShowPrivacy(false)} />}
     </div>
   );
